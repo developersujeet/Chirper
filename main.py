@@ -1,59 +1,68 @@
-from flask import Flask, render_template, request, jsonify
-import face_recognition
-import numpy as np
-import os
-import base64
+from flask import Flask, render_template_string, Response
+import cv2
 
 app = Flask(__name__)
+camera = cv2.VideoCapture(0)  # Open webcam
 
-# Store known faces and their names
-known_face_encodings = []
-known_face_names = []
+def generate_frames():
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/upload', methods=['POST'])
-def upload_image():
-    # Get the image from the POST request
-    image_file = request.files['image']
-    image_path = os.path.join('uploads', image_file.filename)
-    image_file.save(image_path)
-
-    # Load the image and get the face encoding
-    image = face_recognition.load_image_file(image_path)
-    face_encoding = face_recognition.face_encodings(image)
-
-    if face_encoding:
-        # Store the encoding and label it with the user's name
-        known_face_encodings.append(face_encoding[0])
-        known_face_names.append(image_file.filename.split('.')[0])  # Use the file name as the user's name
-        
-        return jsonify({"message": "Face uploaded and stored successfully!"}), 200
-    else:
-        return jsonify({"message": "No face detected!"}), 400
-
-@app.route('/check_face', methods=['POST'])
-def check_face():
-    # Get the base64 image data from the client
-    data = request.json['image']
-    image_data = base64.b64decode(data)
-    
-    # Load the image and check for faces
-    img_array = np.frombuffer(image_data, dtype=np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    face_encoding = face_recognition.face_encodings(img)
-
-    if face_encoding:
-        results = face_recognition.compare_faces(known_face_encodings, face_encoding[0])
-        
-        if True in results:
-            return jsonify({"message": "Access granted"}), 200
+    while True:
+        success, frame = camera.read()
+        if not success:
+            break
         else:
-            return jsonify({"message": "Access denied"}), 403
-    else:
-        return jsonify({"message": "No face detected!"}), 400
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-if __name__ == '__main__':
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+
+            _, buffer = cv2.imencode(".jpg", frame)
+            frame = buffer.tobytes()
+
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+
+html_code = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Detection</title>
+    <style>
+        body {
+            text-align: center;
+            font-family: Arial, sans-serif;
+            background: #222;
+            color: white;
+        }
+        #video_feed {
+            border-radius: 10px;
+            width: 640px;
+            height: 480px;
+            border: 3px solid white;
+        }
+    </style>
+</head>
+<body>
+    <h1>Face Detection App</h1>
+    <img id="video_feed" src="{{ url_for('video_feed') }}" alt="Live Feed">
+    <script>
+        console.log("Face Detection Running...");
+    </script>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(html_code)
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+if __name__ == "__main__":
     app.run(debug=True)
